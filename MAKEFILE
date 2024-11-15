@@ -1,39 +1,115 @@
 # Compiler and Flags
 CC = gcc
 CFLAGS = -Wall -Wextra -pedantic -std=c99
-LDFLAGS = -lssl -lcrypto
+LDFLAGS = -lssl -lcrypto -lcurl
 INCLUDES = -Iinclude
 
 # Targets
-TARGETS = pmll arc_agi_benchmark pmll_np_solver sat_test
+TARGETS = pmll arc_agi_benchmark pmll_np_solver sat_test api_llama api vector_Matrix
+
+# Deployment and Service Management
+INSTALL_DIR = /opt/pmll
+DEPLOY_BINARIES = silo_manager api logic_loop
+DEPLOY_SCRIPT = deploy.sh
+ORCHESTRATION_SCRIPT = ./Orchestrate.sh
 
 # Default target: Build all
-.PHONY: all clean debug help
+.PHONY: all clean debug help deploy start_services stop_services restart_services Orchestrate run deploy_script
 all: $(TARGETS)
 
-# SAT Test target
-sat_test: SAT_Compare.o Pmll_NP_Solver.o MiniSAT.o generate_3sat_instance.o SAT_Solver.o
+# Define each binary and its dependencies
+pmll: unified_voice.o pml_logic_loop.o memory_silo.o io_socket.o persistence.o cross_talk.o main.o vector_Matrix.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+
+arc_agi_benchmark: arc_agi_benchmark.o vector_Matrix.o io_socket.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+
+pmll_np_solver: pmll_np_solver.o vector_Matrix.o io_socket.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+
+sat_test: SAT_Compare.o Pmll_NP_Solver.o MiniSAT.o generate_3sat_instance.o SAT_Solver.o vector_Matrix.o io_socket.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+
+api_llama: API_Llama.o vector_Matrix.o io_socket.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+
+api: API.o vector_Matrix.o io_socket.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+
+vector_Matrix: vector_Matrix.o io_socket.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
 
 # Compile Rules
 %.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c $<
 
-# Existing Targets
-pmll: unified_voice.o pml_logic_loop.o memory_silo.o io_socket.o persistence.o cross_talk.o main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+# Deployment Target using Makefile Deployment Script
+deploy: $(TARGETS)
+	@echo "Deploying binaries to $(INSTALL_DIR)..."
+	@sudo mkdir -p $(INSTALL_DIR)
+	@for binary in $(DEPLOY_BINARIES); do \
+	    if [ -f $$binary ]; then \
+	        sudo cp $$binary $(INSTALL_DIR)/; \
+	        echo "Deployed $$binary to $(INSTALL_DIR)"; \
+	    else \
+	        echo "Binary $$binary not found. Skipping..."; \
+	    fi \
+	done
+	@echo "Deployment complete."
 
-pmll_np_solver: pmll_np_solver.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+# Deployment Target Using deploy.sh
+deploy_script: $(DEPLOY_SCRIPT)
+	@echo "Running deployment script $(DEPLOY_SCRIPT)..."
+	@if [ -f $(DEPLOY_SCRIPT) ]; then \
+	    chmod +x $(DEPLOY_SCRIPT); \
+	    ./$(DEPLOY_SCRIPT) || { echo "Deployment script failed. Check logs for details."; exit 1; }; \
+	else \
+	    echo "Deployment script $(DEPLOY_SCRIPT) not found."; \
+	    exit 1; \
+	fi
 
-arc_agi_benchmark: arc_agi_benchmark.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $^
+# Start Services
+start_services:
+	@echo "Starting services..."
+	@$(INSTALL_DIR)/silo_manager & echo $$! > silo_manager.pid
+	@$(INSTALL_DIR)/api & echo $$! > api.pid
+	@$(INSTALL_DIR)/logic_loop & echo $$! > logic_loop.pid
+	@echo "Services started successfully."
 
-# Run Commands
+# Stop Services
+stop_services:
+	@echo "Stopping services..."
+	@for pidfile in silo_manager.pid api.pid logic_loop.pid; do \
+	    if [ -f $$pidfile ]; then \
+	        kill `cat $$pidfile` && rm -f $$pidfile; \
+	        echo "Stopped service with PID `cat $$pidfile`"; \
+	    else \
+	        echo "PID file $$pidfile not found. Skipping..."; \
+	    fi \
+	done
+	@echo "Services stopped."
+
+# Restart Services
+restart_services: stop_services start_services
+	@echo "Services restarted."
+
+# Run Orchestration Script
+Orchestrate:
+	@if [ -f $(ORCHESTRATION_SCRIPT) ]; then \
+		echo "Running orchestration script..."; \
+		chmod +x $(ORCHESTRATION_SCRIPT); \
+		$(ORCHESTRATION_SCRIPT); \
+	else \
+		echo "Error: Orchestration script $(ORCHESTRATION_SCRIPT) not found."; \
+		exit 1; \
+	fi
+
+# Run Default Program (pmll)
 run: pmll
-	@echo "Running pmll..."
+	@echo "Running the default program: pmll..."
 	./pmll
 
+# Run Commands for Specific Targets
 run_arc_agi_benchmark: arc_agi_benchmark
 	@echo "Running arc_agi_benchmark..."
 	./arc_agi_benchmark
@@ -46,10 +122,23 @@ run_sat_test: sat_test
 	@echo "Running sat_test..."
 	./sat_test
 
+run_api_llama: api_llama
+	@echo "Running api_llama..."
+	./api_llama
+
+run_api: api
+	@echo "Running api..."
+	./api
+
+run_vector_Matrix: vector_Matrix
+	@echo "Running vector_Matrix..."
+	./vector_Matrix
+
 # Clean Target
 clean:
 	@echo "Cleaning up..."
-	-rm -f *.o $(TARGETS)
+	-rm -f *.o $(TARGETS) *.pid
+	@echo "Clean complete."
 
 # Debug Build
 debug: CFLAGS += -g -O0
@@ -61,7 +150,16 @@ help:
 	@echo "  all                  Build all targets."
 	@echo "  clean                Remove all build artifacts."
 	@echo "  debug                Build all targets with debug flags."
-	@echo "  run                  Run the pmll executable."
+	@echo "  deploy               Deploy binaries to $(INSTALL_DIR)."
+	@echo "  deploy_script        Run deployment using deploy.sh."
+	@echo "  start_services       Start all services."
+	@echo "  stop_services        Stop all services."
+	@echo "  restart_services     Restart all services."
+	@echo "  Orchestrate          Run the orchestration script."
+	@echo "  run                  Build all and run the pmll executable."
 	@echo "  run_arc_agi_benchmark Run the arc_agi_benchmark executable."
 	@echo "  run_pmll_np_solver   Run the Pmll NP Solver."
 	@echo "  run_sat_test         Run the SAT test."
+	@echo "  run_api_llama        Run the API Llama."
+	@echo "  run_api              Run the API."
+	@echo "  run_vector_Matrix    Run the vector_Matrix executable."
